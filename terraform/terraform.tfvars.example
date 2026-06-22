@@ -1,0 +1,40 @@
+####################################
+# Example: copy to environments/<env>/terraform.tfvars
+####################################
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+environment        = "dev"
+location           = "eastus2"
+secondary_location = "centralus"
+platform_name      = "akspf"
+
+# Networking
+hub_vnet_cidr                = "10.0.0.0/22"
+spoke_vnet_cidr              = "10.10.0.0/20"
+aks_subnet_cidr              = "10.10.0.0/22"
+pod_subnet_cidr              = "10.10.4.0/22"
+private_endpoint_subnet_cidr = "10.10.8.0/24"
+appgw_subnet_cidr            = "10.10.9.0/24"
+firewall_subnet_cidr         = "10.0.0.0/26"
+bastion_subnet_cidr          = "10.0.0.64/26"
+
+# AKS
+kubernetes_version     = "1.30.3"
+enable_private_cluster = true
+admin_group_object_ids = ["00000000-0000-0000-0000-000000000000"]
+
+# Observability
+log_retention_days    = 30
+alert_email_receivers = ["platform-team@example.com"]
+teams_webhook_url     = ""
+
+# GitOps
+gitops_repo_url    = "https://github.com/example-org/platform-engineering"
+gitops_repo_branch = "main"
+
+tags = {
+  Owner       = "platform-team"
+  Application = "kubernetes-platform"
+}

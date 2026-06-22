@@ -1,0 +1,160 @@
+name: Application CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'app/**'
+      - 'platform-engineering/helm/sample-app/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, qa, uat, prod]
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+env:
+  IMAGE_NAME: sample-app
+  ACR_NAME: acrakspf
+
+jobs:
+  build:
+    name: Build & Scan
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          ignore-unfixed: true
+
+      - name: Cosign sign image
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o cosign
+          chmod +x cosign
+          ./cosign sign --yes ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+
+  helm-package:
+    name: Helm package & publish
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Package & push chart
+        run: |
+          helm package platform-engineering/helm/sample-app --version 0.1.0-${{ needs.build.outputs.image_tag }}
+          az acr helm push --force --name ${{ env.ACR_NAME }} sample-app-0.1.0-${{ needs.build.outputs.image_tag }}.tgz || true
+          helm registry login ${{ env.ACR_NAME }}.azurecr.io \
+            --username 00000000-0000-0000-0000-000000000000 \
+            --password $(az acr login --name ${{ env.ACR_NAME }} --expose-token --query accessToken -o tsv)
+          helm push sample-app-0.1.0-${{ needs.build.outputs.image_tag }}.tgz oci://${{ env.ACR_NAME }}.azurecr.io/helm
+
+  promote:
+    name: Promote via GitOps
+    runs-on: ubuntu-latest
+    needs: [build, helm-package]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITOPS_PAT }}
+
+      - name: Update image tag in values
+        run: |
+          ENV=${{ inputs.environment || 'dev' }}
+          yq -i ".image.tag = \"${{ needs.build.outputs.image_tag }}\"" \
+            platform-engineering/helm/sample-app/values-${ENV}.yaml
+
+      - name: Commit & push
+        run: |
+          git config user.name "platform-bot"
+          git config user.email "platform-bot@example.com"
+          git add platform-engineering/helm/sample-app/values-*.yaml
+          git commit -m "chore(deploy): promote ${{ env.IMAGE_NAME }} ${{ needs.build.outputs.image_tag }} to ${{ inputs.environment || 'dev' }}"
+          git push
+
+  smoke-test:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    needs: promote
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for ArgoCD sync
+        run: |
+          ENV=${{ inputs.environment || 'dev' }}
+          az aks get-credentials \
+            --resource-group rg-akspf-${ENV}-aks \
+            --name aks-akspf-${ENV} --overwrite-existing
+          kubectl rollout status -n applications deployment/sample-app --timeout=10m
+
+      - name: Run smoke
+        run: |
+          kubectl run smoke --rm -i --restart=Never --image=curlimages/curl -- \
+            curl -fsS http://sample-app.applications.svc.cluster.local/healthz
+
+  rollback:
+    name: Rollback (on failure)
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          ENV=${{ inputs.environment || 'dev' }}
+          az aks get-credentials --resource-group rg-akspf-${ENV}-aks --name aks-akspf-${ENV} --overwrite-existing
+          kubectl rollout undo -n applications deployment/sample-app

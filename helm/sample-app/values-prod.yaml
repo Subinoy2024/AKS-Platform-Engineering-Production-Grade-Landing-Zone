@@ -1,0 +1,34 @@
+replicaCount: 6
+
+image:
+  tag: ""  # injected by CI
+
+config:
+  LOG_LEVEL: info
+  ENVIRONMENT: prod
+
+autoscaling:
+  minReplicas: 6
+  maxReplicas: 30
+  targetCPUUtilizationPercentage: 60
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podDisruptionBudget:
+  minAvailable: 4
+
+ingress:
+  hosts:
+    - host: sample-app.prod.platform.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: sample-app-tls
+      hosts: [sample-app.prod.platform.internal]

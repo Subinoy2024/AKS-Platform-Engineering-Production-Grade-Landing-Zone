@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: applications
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Tenant application workloads
+  sourceRepos:
+    - https://github.com/example-org/platform-engineering
+    - https://github.com/example-org/*
+  destinations:
+    - namespace: applications
+      server: https://kubernetes.default.svc
+    - namespace: 'team-*'
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  roles:
+    - name: developer
+      description: Read-only access for application developers
+      policies:
+        - p, proj:applications:developer, applications, get, applications/*, allow
+        - p, proj:applications:developer, applications, sync, applications/*, allow
+      groups:
+        - application-developers

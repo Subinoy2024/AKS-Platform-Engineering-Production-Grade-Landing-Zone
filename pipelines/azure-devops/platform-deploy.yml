@@ -1,0 +1,83 @@
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, qa, uat, prod]
+  - name: action
+    displayName: Action
+    type: string
+    default: plan
+    values: [plan, apply, destroy]
+
+trigger: none
+
+variables:
+  TF_VERSION: '1.7.5'
+  TF_WORKING_DIR: 'platform-engineering/terraform'
+  ENV: ${{ parameters.environment }}
+
+stages:
+  - stage: Terraform
+    displayName: Terraform ${{ parameters.action }} - ${{ parameters.environment }}
+    jobs:
+      - deployment: Apply
+        environment: ${{ parameters.environment }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - task: AzureCLI@2
+                  displayName: Terraform init + ${{ parameters.action }}
+                  inputs:
+                    azureSubscription: 'azure-platform-connection'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      cd $(TF_WORKING_DIR)
+                      terraform init -backend-config="../environments/$(ENV)/backend.hcl"
+
+                      case "${{ parameters.action }}" in
+                        plan)
+                          terraform plan -var-file="../environments/$(ENV)/terraform.tfvars" -out=tfplan
+                          ;;
+                        apply)
+                          terraform plan -var-file="../environments/$(ENV)/terraform.tfvars" -out=tfplan
+                          terraform apply -auto-approve tfplan
+                          ;;
+                        destroy)
+                          terraform destroy -auto-approve -var-file="../environments/$(ENV)/terraform.tfvars"
+                          ;;
+                      esac
+
+  - stage: PostDeploy
+    displayName: Post-deploy validation
+    dependsOn: Terraform
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - job: Validate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: 'azure-platform-connection'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group rg-akspf-$(ENV)-aks \
+                  --name aks-akspf-$(ENV) \
+                  --overwrite-existing
+                kubectl get nodes
+                kubectl wait --for=condition=available --timeout=300s \
+                  -n argocd deployment -l app.kubernetes.io/name=argocd-server

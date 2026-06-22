@@ -1,0 +1,66 @@
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [app/*]
+
+parameters:
+  - name: targetEnvironment
+    type: string
+    default: dev
+    values: [dev, qa, uat, prod]
+
+variables:
+  ACR_NAME: acrakspf
+  IMAGE_NAME: sample-app
+  IMAGE_TAG: $(Build.SourceVersion)
+
+stages:
+  - stage: Build
+    jobs:
+      - job: BuildScanPush
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: ACR login + build + push
+            inputs:
+              azureSubscription: 'azure-platform-connection'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr login --name $(ACR_NAME)
+                docker buildx build \
+                  --platform linux/amd64 \
+                  -t $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(IMAGE_TAG) \
+                  --push ./app
+
+          - script: |
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --exit-code 1 \
+                $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(IMAGE_TAG)
+            displayName: trivy image scan
+
+  - stage: Promote
+    dependsOn: Build
+    jobs:
+      - job: GitOpsPromote
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+          - script: |
+              set -e
+              ENV=${{ parameters.targetEnvironment }}
+              sed -i "s|tag: .*|tag: $(IMAGE_TAG)|" \
+                platform-engineering/helm/sample-app/values-${ENV}.yaml
+              git config user.email "azdo-bot@example.com"
+              git config user.name "azdo-bot"
+              git add platform-engineering/helm/sample-app/values-${ENV}.yaml
+              git commit -m "chore(deploy): promote $(IMAGE_NAME) $(IMAGE_TAG) to ${ENV}"
+              git push origin HEAD:main
+            displayName: Promote via GitOps

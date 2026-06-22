@@ -1,0 +1,13 @@
+apiVersion: v2
+name: sample-app
+description: Sample microservice deployed on the AKS Platform
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: Platform Team
+    email: platform-team@example.com
+keywords:
+  - microservice
+  - aks
+  - platform

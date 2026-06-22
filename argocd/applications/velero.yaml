@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: platform
+  source:
+    repoURL: https://vmware-tanzu.github.io/helm-charts
+    chart: velero
+    targetRevision: 6.7.0
+    helm:
+      releaseName: velero
+      values: |
+        configuration:
+          backupStorageLocation:
+            - name: default
+              provider: azure
+              bucket: velero
+              config:
+                resourceGroup: rg-akspf-platform
+                storageAccount: stveleroakspf
+          volumeSnapshotLocation:
+            - name: default
+              provider: azure
+              config:
+                resourceGroup: rg-akspf-platform
+        credentials:
+          useSecret: false
+        initContainers:
+          - name: velero-plugin-for-microsoft-azure
+            image: velero/velero-plugin-for-microsoft-azure:v1.10.0
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+        schedules:
+          daily-backup:
+            schedule: "0 2 * * *"
+            template:
+              ttl: "168h"
+              includedNamespaces: ["*"]
+              excludedNamespaces: ["kube-system", "kube-public"]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

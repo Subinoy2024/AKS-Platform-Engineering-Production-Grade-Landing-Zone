@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app-prod
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: applications
+  source:
+    repoURL: https://github.com/example-org/platform-engineering
+    targetRevision: main
+    path: helm/sample-app
+    helm:
+      releaseName: sample-app
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: applications
+  syncPolicy:
+    # Prod is manual-sync: requires deliberate promotion through CI/CD.
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
